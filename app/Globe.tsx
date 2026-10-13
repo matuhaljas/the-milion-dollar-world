@@ -224,6 +224,7 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
   // After Stripe: wait for the webhook to mark the order paid, then fly to it.
   const paidOrder = paidId ? orders.find((o) => o.id === paidId) : undefined;
   const tries = useRef(0);
+  const [didGiveUp, setDidGiveUp] = useState(false);
   useEffect(() => {
     if (!paidId) return;
     if (paidOrder) {
@@ -233,10 +234,9 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
       controls.autoRotate = false;
       return;
     }
-    if (tries.current++ < 15) {
-      const t = setTimeout(() => router.refresh(), 2000);
-      return () => clearTimeout(t);
-    }
+    if (tries.current++ >= 15) return setDidGiveUp(true);
+    const t = setTimeout(() => router.refresh(), 2000);
+    return () => clearTimeout(t);
   }, [paidId, paidOrder, orders, router]);
 
   const pixels = sel ? sel.w * sel.h : 0;
@@ -257,7 +257,11 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
       {paidId && (
         <div role="status" style={{ position: "absolute", top: 140, left: "50%", transform: "translateX(-50%)",
           background: "#ffd34d", color: "#1a1400", padding: "8px 14px", borderRadius: 999, fontWeight: 600 }}>
-          {paidOrder ? "🎉 Your pixels are live. Thank you!" : tries.current > 15 ? "Payment received. Your pixels will appear shortly; refresh in a minute." : "Payment received, placing your pixels…"}
+          {paidOrder
+            ? "🎉 Your pixels are live. Thank you!"
+            : didGiveUp
+              ? "Payment received. Your pixels will appear shortly; refresh in a minute."
+              : "Payment received, placing your pixels…"}
         </div>
       )}
 
