@@ -1,12 +1,14 @@
 # The Million Dollar Globe
 
-The Million Dollar Homepage, but on a globe: 1440 × 720 cells (0.25° each) ≈ 1M pixels at €1 each. Buyers pick a block of at least 10 cells, a color, a name and a link.
+The Million Dollar Homepage, but on a globe: 998,784 pixels at €1 each. Buyers pick a block of at least 10 pixels (max 100×100), paint every pixel or upload an image, and add a name and a link.
+
+The grid is a cube-sphere: a cube with 408×408 cells per face, inflated into a ball. Cells are about 22 km across everywhere, and the biggest is under 1.5× the size of the smallest, so there are no tiny pixels at the poles. A block stays on one cube face.
 
 **Stack:** Next.js · three.js · Supabase (Postgres) · Stripe Checkout
 
 ## Setup
 
-1. **Supabase:** create a project. In the SQL editor, run [`supabase/schema.sql`](supabase/schema.sql).
+1. **Supabase:** create a project. In the SQL editor, run [`supabase/schema.sql`](supabase/schema.sql). If you ran an older version, run `drop table orders;` first.
 2. **Stripe:** create an account (test mode is fine to start).
 3. Copy the env file: `cp .env.example .env.local`, then fill in:
    - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`: Supabase → Project Settings → API. Keep the service key secret.
@@ -36,5 +38,5 @@ The Million Dollar Homepage, but on a globe: 1440 × 720 cells (0.25° each) ≈
 ## Checks
 
 ```bash
-npm run check   # grid math
+npm run check   # grid math, cell sizes, pixel encoding
 ```

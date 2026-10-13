@@ -6,8 +6,8 @@ export default function Terms() {
       <p><b>Operator:</b> [Your name], [Country]. <b>Contact:</b> [your email]</p>
       <h2>What you buy</h2>
       <p>
-        A purchase places your chosen color, name and link on a block of cells on the globe at this site, for as long
-        as the site runs. Each cell costs €1, minimum 10 cells. Payments are processed by Stripe. The money
+        A purchase places your pixel art (painted or uploaded), name and link on a block of pixels on the globe at this site, for as long
+        as the site runs. Each pixel costs €1, minimum 10 pixels. Payments are processed by Stripe. The money
         funds my university studies.
       </p>
       <h2>Refunds</h2>
@@ -17,7 +17,7 @@ export default function Terms() {
       </p>
       <h2>Content rules</h2>
       <p>
-        No illegal, hateful, sexual, or malicious content or links (malware, phishing, scams). I may hide pixels or remove
+        No illegal, hateful, sexual, or malicious images, content, or links (malware, phishing, scams). I may hide pixels or remove
         links that break these rules, without a refund.
       </p>
       <p><a href="/">← Back to the globe</a></p>

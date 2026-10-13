@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { loadPaidOrders } from "@/lib/server";
-import { W, H, PRICE_CENTS } from "@/lib/grid";
+import { TOTAL, PRICE_CENTS } from "@/lib/grid";
 import Globe from "./Globe";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +20,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
           <b>€{PRICE_CENTS / 100} per pixel</b>, yours forever. Zoom in, click a spot, leave your mark.
         </p>
         <p style={{ margin: "8px 0 0", fontVariantNumeric: "tabular-nums" }}>
-          <b>{sold.toLocaleString("en")}</b> / {(W * H).toLocaleString("en")} pixels sold ·{" "}
+          <b>{sold.toLocaleString("en")}</b> / {TOTAL.toLocaleString("en")} pixels sold ·{" "}
           <b>€{((sold * PRICE_CENTS) / 100).toLocaleString("en")}</b> raised
         </p>
       </header>

@@ -1,18 +1,18 @@
 "use server";
 import { redirect } from "next/navigation";
 import { db, stripe } from "@/lib/server";
-import { PRICE_CENTS, cellToLatLon, validateBlock } from "@/lib/grid";
+import { PRICE_CENTS, cellCenter, isPixelData, validateBlock, vecToLatLon } from "@/lib/grid";
 
 // Returns an error message for the dialog, or redirects to Stripe Checkout.
 export async function createCheckout(_prev: string | null, form: FormData): Promise<string | null> {
-  const block = { x: +form.get("x")!, y: +form.get("y")!, w: +form.get("w")!, h: +form.get("h")! };
-  const color = String(form.get("color"));
+  const block = { face: +form.get("face")!, x: +form.get("x")!, y: +form.get("y")!, w: +form.get("w")!, h: +form.get("h")! };
+  const pixels = String(form.get("pixels") ?? "");
   const name = String(form.get("name") ?? "").trim();
   const rawUrl = String(form.get("url") ?? "").trim();
 
   const blockError = validateBlock(block);
   if (blockError) return blockError;
-  if (!/^#[0-9a-f]{6}$/i.test(color)) return "Pick a color";
+  if (!isPixelData(pixels, block.w, block.h)) return "Your drawing didn't come through, try again";
   if (!name || name.length > 40) return "Name must be 1–40 characters";
   let url: string | null = null;
   if (rawUrl) {
@@ -31,7 +31,7 @@ export async function createCheckout(_prev: string | null, form: FormData): Prom
 
   const { data: order, error } = await supabase
     .from("orders")
-    .insert({ ...block, color, name, url })
+    .insert({ ...block, pixels, name, url })
     .select("id")
     .single();
   if (error?.code === "23P01") return "Someone just grabbed part of that spot, pick another one.";
@@ -39,7 +39,7 @@ export async function createCheckout(_prev: string | null, form: FormData): Prom
 
   let checkoutUrl: string;
   try {
-    const { lat, lon } = cellToLatLon(block.x, block.y);
+    const { lat, lon } = vecToLatLon(cellCenter(block));
     const session = await stripe().checkout.sessions.create({
       mode: "payment",
       allowed_payment_method_types: ["card", "link"], // instant only (no SEPA delays); Apple/Google Pay ride on card

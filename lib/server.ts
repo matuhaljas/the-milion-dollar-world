@@ -19,7 +19,7 @@ export async function loadPaidOrders(): Promise<Order[]> {
   for (let from = 0; ; from += 1000) {
     const { data, error } = await db()
       .from("orders")
-      .select("id,x,y,w,h,color,name,url")
+      .select("id,face,x,y,w,h,pixels,name,url")
       .eq("status", "paid")
       .order("created_at")
       .range(from, from + 999);

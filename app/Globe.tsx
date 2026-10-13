@@ -1,65 +1,132 @@
 "use client";
-import { useActionState, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { geoEquirectangular, geoPath, type GeoPermissibleObjects } from "d3-geo";
 import { feature } from "topojson-client";
-import { W, H, PRICE_CENTS, MIN_PIXELS, type Block, type Order, uvToCell, cellToLatLon, overlaps } from "@/lib/grid";
-import { createCheckout } from "./actions";
+import {
+  N, TOTAL, ATLAS_W, ATLAS_H, FACES, type Block, type Cell, type Order, type Vec,
+  vecToCell, cellCenter, cellIndex, atlasOrigin, faceToVec, vecToLatLon, latLonToVec, overlaps, pixelsToRGBA,
+} from "@/lib/grid";
+import BuyDialog from "./BuyDialog";
 
-const OCEAN = "#7d97ab";
-const LAND = "#93a98c";
+const OCEAN = [125, 151, 171]; // #7d97ab, muted
+const LAND = [147, 169, 140]; // #93a98c, muted
 const DEFAULT_W = 5;
 const DEFAULT_H = 2;
 
-// Matches three.js SphereGeometry: u=0 → lon -180 at -X, north pole at +Y.
-function lonLatToVec(lat: number, lon: number, r: number) {
-  const phi = ((lon + 180) / 180) * Math.PI;
-  const la = (lat * Math.PI) / 180;
-  return new THREE.Vector3(-Math.cos(phi) * Math.cos(la) * r, Math.sin(la) * r, Math.sin(phi) * Math.cos(la) * r);
-}
-
-const blockAt = (c: { x: number; y: number }, w = DEFAULT_W, h = DEFAULT_H): Block => ({
-  x: Math.min(c.x, W - w), y: Math.min(c.y, H - h), w, h,
+const blockAt = (c: Cell): Block => ({
+  face: c.face, x: Math.min(c.x, N - DEFAULT_W), y: Math.min(c.y, N - DEFAULT_H), w: DEFAULT_W, h: DEFAULT_H,
 });
 
-const euro = (pixels: number) => `€${((pixels * PRICE_CENTS) / 100).toLocaleString("en")}`;
+const glslVecs = (key: "c" | "r" | "u") => `vec3[6](${FACES.map((f) => `vec3(${f[key].join(".0,")}.0)`).join(",")})`;
+
+// Each fragment works out its own cube-sphere cell, so cell edges are exact and match picking in lib/grid.ts.
+const FRAGMENT_HEAD = `
+#define GN ${N}.0
+#define AW ${ATLAS_W}.0
+#define AH ${ATLAS_H}.0
+const vec3 FC[6] = ${glslVecs("c")};
+const vec3 FR[6] = ${glslVecs("r")};
+const vec3 FU[6] = ${glslVecs("u")};
+uniform sampler2D uAtlas;
+uniform vec4 uSel; uniform float uSelFace;
+uniform vec4 uHover; uniform float uHoverFace;
+varying vec3 vObjPos;
+bool inBlock(int face, vec2 cell, vec4 r, float rFace) {
+  return r.z > 0.0 && float(face) == rFace && cell.x >= r.x && cell.x < r.x + r.z && cell.y >= r.y && cell.y < r.y + r.w;
+}`;
+
+const FRAGMENT_BODY = `
+{
+  vec3 p = normalize(vObjPos);
+  vec3 ap = abs(p);
+  int face = (ap.x >= ap.y && ap.x >= ap.z) ? (p.x > 0.0 ? 1 : 3) : (ap.y >= ap.z) ? (p.y > 0.0 ? 4 : 5) : (p.z > 0.0 ? 0 : 2);
+  vec3 l = p / dot(p, FC[face]);
+  vec2 ab = vec2(atan(dot(l, FR[face])), atan(dot(l, FU[face]))) / (PI / 4.0);
+  vec2 cell = vec2(ab.x + 1.0, 1.0 - ab.y) * (0.5 * GN);
+  vec2 atlas = vec2(float(face % 3), float(face / 3)) * GN + cell;
+  float cpp = length(fwidth(p)) * GN / (PI * 0.5); // cells per screen pixel
+  vec2 uv = vec2(atlas.x / AW, 1.0 - atlas.y / AH);
+  diffuseColor.rgb = textureGrad(uAtlas, uv, vec2(cpp / AW, 0.0), vec2(0.0, cpp / AH)).rgb;
+
+  vec2 edge = min(fract(cell), 1.0 - fract(cell)) / max(fwidth(cell), vec2(1e-6));
+  float line = 1.0 - smoothstep(0.0, 1.0, min(edge.x, edge.y));
+  float fade = smoothstep(8.0, 18.0, 1.0 / cpp); // grid only once cells are big on screen
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), line * fade * 0.3);
+  if (inBlock(face, cell, uSel, uSelFace)) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.83, 0.3), 0.75);
+  else if (inBlock(face, cell, uHover, uHoverFace)) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), 0.5);
+}`;
+
+// Land/ocean per cell: rasterize the coastline once, then sample it at every cell center.
+function buildBaseMap(land: GeoPermissibleObjects | null) {
+  const MW = 2048, MH = 1024;
+  const mask = document.createElement("canvas");
+  mask.width = MW;
+  mask.height = MH;
+  const m = mask.getContext("2d", { willReadFrequently: true })!;
+  if (land) {
+    m.fillStyle = "#fff";
+    m.beginPath();
+    geoPath(geoEquirectangular().scale(MW / (2 * Math.PI)).translate([MW / 2, MH / 2]), m)(land);
+    m.fill();
+  }
+  const isLand = m.getImageData(0, 0, MW, MH).data;
+  const base = new ImageData(ATLAS_W, ATLAS_H);
+  for (let face = 0; face < 6; face++) {
+    const [ox, oy] = atlasOrigin(face);
+    for (let y = 0; y < N; y++)
+      for (let x = 0; x < N; x++) {
+        const { lat, lon } = vecToLatLon(cellCenter({ face, x, y }));
+        const mx = Math.min(MW - 1, Math.floor(((lon + 180) / 360) * MW));
+        const my = Math.min(MH - 1, Math.floor(((90 - lat) / 180) * MH));
+        const i = ((oy + y) * ATLAS_W + ox + x) * 4;
+        base.data.set(isLand[(my * MW + mx) * 4] > 127 ? LAND : OCEAN, i);
+        base.data[i + 3] = 255;
+      }
+  }
+  return base;
+}
 
 let land: GeoPermissibleObjects | null = null; // loaded once per page
 
 type Three = {
   canvas: HTMLCanvasElement;
   texture: THREE.CanvasTexture;
-  uniforms: { uSel: { value: THREE.Vector4 }; uHover: { value: THREE.Vector4 } };
+  uniforms: Record<"uSel" | "uHover", { value: THREE.Vector4 }> & Record<"uSelFace" | "uHoverFace", { value: number }>;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
 };
 
+const toVector3 = (v: Vec, r = 1) => new THREE.Vector3(v[0] * r, v[1] * r, v[2] * r);
+
 export default function Globe({ orders, paidId }: { orders: Order[]; paidId: string | null }) {
   const mount = useRef<HTMLDivElement>(null);
-  const tip = useRef<HTMLDivElement>(null);
+  const tooltip = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const three = useRef<Three>(null);
-  const [landReady, setLandReady] = useState(!!land);
-  const [sel, setSel] = useState<Block | null>(null);
+  const [isLandReady, setIsLandReady] = useState(!!land);
+  const [selection, setSelection] = useState<Block | null>(null);
   const [owner, setOwner] = useState<Order | null>(null);
-  const [error, buy, buying] = useActionState(createCheckout, null);
   const router = useRouter();
 
   // cell index → order index + 1, for O(1) hover/click lookup
   const cellOwner = useMemo(() => {
-    const m = new Int32Array(W * H);
+    const m = new Int32Array(TOTAL);
     orders.forEach((o, i) => {
-      for (let y = o.y; y < o.y + o.h; y++) m.fill(i + 1, y * W + o.x, y * W + o.x + o.w);
+      for (let y = o.y; y < o.y + o.h; y++) {
+        const row = cellIndex({ face: o.face, x: o.x, y });
+        m.fill(i + 1, row, row + o.w);
+      }
     });
     return m;
   }, [orders]);
 
   // Pointer handlers live in the once-only three.js effect, so they read fresh data through this ref.
-  const live = useRef({ orders, cellOwner });
+  const latestOrders = useRef({ orders, cellOwner });
   useEffect(() => {
-    live.current = { orders, cellOwner };
+    latestOrders.current = { orders, cellOwner };
   }, [orders, cellOwner]);
 
   useEffect(() => {
@@ -70,7 +137,7 @@ export default function Globe({ orders, paidId }: { orders: Order[]; paidId: str
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
-    camera.position.copy(lonLatToVec(40, 15, 3.4));
+    camera.position.copy(toVector3(latLonToVec(40, 15), 3.4));
     scene.add(new THREE.AmbientLight(0xffffff, 0.8));
     const sun = new THREE.DirectionalLight(0xffffff, 0.3);
     sun.position.set(-1, 1, 2);
@@ -78,39 +145,34 @@ export default function Globe({ orders, paidId }: { orders: Order[]; paidId: str
     scene.add(camera);
 
     const canvas = document.createElement("canvas");
-    canvas.width = W;
-    canvas.height = H;
+    canvas.width = ATLAS_W;
+    canvas.height = ATLAS_H;
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.magFilter = THREE.NearestFilter; // crisp pixels when zoomed in
-    texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
 
-    const uniforms = { uSel: { value: new THREE.Vector4() }, uHover: { value: new THREE.Vector4() } };
-    const material = new THREE.MeshLambertMaterial({ map: texture });
+    const uniforms = {
+      uAtlas: { value: texture },
+      uSel: { value: new THREE.Vector4() }, uSelFace: { value: -1 },
+      uHover: { value: new THREE.Vector4() }, uHoverFace: { value: -1 },
+    };
+    const material = new THREE.MeshLambertMaterial();
     material.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vObjPos;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvObjPos = position;");
       shader.fragmentShader = shader.fragmentShader
-        .replace("#include <common>", `#include <common>
-uniform vec4 uSel;
-uniform vec4 uHover;
-bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z && c.y >= r.y && c.y < r.y + r.w; }`)
-        .replace("#include <map_fragment>", `#include <map_fragment>
-{
-  vec2 cell = vec2(vMapUv.x * ${W}.0, (1.0 - vMapUv.y) * ${H}.0);
-  vec2 px = fwidth(cell);
-  vec2 edge = min(fract(cell), 1.0 - fract(cell)) / px;
-  float line = 1.0 - smoothstep(0.0, 1.0, min(edge.x, edge.y));
-  float fade = smoothstep(8.0, 18.0, 1.0 / max(px.x, px.y)); // grid only once cells are big on screen
-  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), line * fade * 0.3);
-  if (inRect(cell, uSel)) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0, 0.83, 0.3), 0.75);
-  else if (inRect(cell, uHover)) diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), 0.5);
-}`);
+        .replace("#include <common>", `#include <common>\n${FRAGMENT_HEAD}`)
+        .replace("#include <map_fragment>", FRAGMENT_BODY);
     };
-    const globe = new THREE.Mesh(new THREE.SphereGeometry(1, 256, 128), material);
+    const globe = new THREE.Mesh(new THREE.SphereGeometry(1, 128, 64), material);
     scene.add(globe);
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    Object.assign(controls, { enableDamping: true, enablePan: false, minDistance: 1.05, maxDistance: 6, autoRotate: true, autoRotateSpeed: 0.4 });
+    Object.assign(controls, {
+      enableDamping: true, enablePan: false, minDistance: 1.05, maxDistance: 6, autoRotate: true, autoRotateSpeed: 0.4,
+    });
     controls.addEventListener("start", () => (controls.autoRotate = false));
     controls.addEventListener("change", () => {
       const altitude = camera.position.length() - 1; // slow down near the surface
@@ -126,25 +188,28 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
       const r = renderer.domElement.getBoundingClientRect();
       ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
       raycaster.setFromCamera(ndc, camera);
-      const uv = raycaster.intersectObject(globe)[0]?.uv;
-      return uv ? uvToCell(uv.x, uv.y) : null;
+      const hit = raycaster.intersectObject(globe)[0]?.point.normalize();
+      return hit ? vecToCell([hit.x, hit.y, hit.z]) : null;
     };
-    const ownerAt = (c: { x: number; y: number }) => live.current.orders[live.current.cellOwner[c.y * W + c.x] - 1];
+    const ownerAt = (c: Cell) => latestOrders.current.orders[latestOrders.current.cellOwner[cellIndex(c)] - 1];
+    const setHover = (b: Block | null) => {
+      uniforms.uHover.value.set(b?.x ?? 0, b?.y ?? 0, b?.w ?? 0, b?.h ?? 0);
+      uniforms.uHoverFace.value = b?.face ?? -1;
+    };
 
     const onMove = (e: PointerEvent) => {
-      const t = tip.current!;
+      const tip = tooltip.current!;
       const c = e.pointerType === "touch" ? null : pick(e);
       if (!c) {
-        uniforms.uHover.value.set(0, 0, 0, 0);
-        t.hidden = true;
+        setHover(null);
+        tip.hidden = true;
         return;
       }
       const o = ownerAt(c);
-      const b = o ?? blockAt(c);
-      uniforms.uHover.value.set(b.x, b.y, b.w, b.h);
-      t.hidden = false;
-      t.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 14}px)`;
-      t.textContent = o ? `${o.name}${o.url ? ` · ${new URL(o.url).hostname}` : ""}` : "Free · click to buy";
+      setHover(o ?? blockAt(c));
+      tip.hidden = false;
+      tip.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 14}px)`;
+      tip.textContent = o ? `${o.name}${o.url ? ` · ${new URL(o.url).hostname}` : ""}` : "Free · click to buy";
     };
     let down: { x: number; y: number } | null = null;
     const onDown = (e: PointerEvent) => (down = { x: e.clientX, y: e.clientY });
@@ -157,12 +222,12 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
       const o = ownerAt(c);
       if (o) return setOwner(o);
       setOwner(null);
-      setSel(blockAt(c));
+      setSelection(blockAt(c));
       dialog.current!.showModal();
     };
     const onLeave = () => {
-      uniforms.uHover.value.set(0, 0, 0, 0);
-      tip.current!.hidden = true;
+      setHover(null);
+      tooltip.current!.hidden = true;
     };
     const dom = renderer.domElement;
     dom.addEventListener("pointermove", onMove);
@@ -185,7 +250,7 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
       import("world-atlas/land-50m.json").then(({ default: topo }) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         land = feature(topo as any, (topo as any).objects.land) as GeoPermissibleObjects;
-        setLandReady(true);
+        setIsLandReady(true);
       });
 
     return () => {
@@ -198,28 +263,26 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
     };
   }, []);
 
-  // Paint base map + sold blocks into the texture.
+  // Paint base map + every sold pixel into the atlas texture.
+  // ponytail: all orders' pixels ship with the page (~6 MB at sell-out); serve a prebuilt atlas PNG if that bites.
+  const baseMap = useRef<{ hasLand: boolean; image: ImageData }>(null);
   useEffect(() => {
+    if (baseMap.current?.hasLand !== isLandReady) baseMap.current = { hasLand: isLandReady, image: buildBaseMap(land) };
     const { canvas, texture } = three.current!;
     const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = OCEAN;
-    ctx.fillRect(0, 0, W, H);
-    if (land) {
-      ctx.fillStyle = LAND;
-      ctx.beginPath();
-      geoPath(geoEquirectangular().scale(W / (2 * Math.PI)).translate([W / 2, H / 2]), ctx)(land);
-      ctx.fill();
-    }
+    ctx.putImageData(baseMap.current.image, 0, 0);
     for (const o of orders) {
-      ctx.fillStyle = o.color;
-      ctx.fillRect(o.x, o.y, o.w, o.h);
+      const [ox, oy] = atlasOrigin(o.face);
+      ctx.putImageData(new ImageData(pixelsToRGBA(o.pixels), o.w, o.h), ox + o.x, oy + o.y);
     }
     texture.needsUpdate = true;
-  }, [orders, landReady]);
+  }, [orders, isLandReady]);
 
   useEffect(() => {
-    three.current!.uniforms.uSel.value.set(sel?.x ?? 0, sel?.y ?? 0, sel?.w ?? 0, sel?.h ?? 0);
-  }, [sel]);
+    const { uSel, uSelFace } = three.current!.uniforms;
+    uSel.value.set(selection?.x ?? 0, selection?.y ?? 0, selection?.w ?? 0, selection?.h ?? 0);
+    uSelFace.value = selection?.face ?? -1;
+  }, [selection]);
 
   // After Stripe: wait for the webhook to mark the order paid, then fly to it.
   const paidOrder = paidId ? orders.find((o) => o.id === paidId) : undefined;
@@ -228,9 +291,9 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
   useEffect(() => {
     if (!paidId) return;
     if (paidOrder) {
-      const { lat, lon } = cellToLatLon(paidOrder.x + paidOrder.w / 2, paidOrder.y + paidOrder.h / 2);
+      const { face, x, y, w, h } = paidOrder;
       const { camera, controls } = three.current!;
-      camera.position.copy(lonLatToVec(lat, lon, 1.15));
+      camera.position.copy(toVector3(faceToVec(face, x + w / 2, y + h / 2), 1.15));
       controls.autoRotate = false;
       return;
     }
@@ -239,19 +302,13 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
     return () => clearTimeout(t);
   }, [paidId, paidOrder, orders, router]);
 
-  const pixels = sel ? sel.w * sel.h : 0;
-  const taken = !!sel && orders.some((o) => overlaps(o, sel));
-  const where = sel && cellToLatLon(sel.x, sel.y);
-  const resize = (key: "w" | "h", value: string) => {
-    const n = parseInt(value, 10);
-    if (sel && n >= 1) setSel({ ...sel, [key]: Math.min(n, key === "w" ? W - sel.x : H - sel.y) });
-  };
+  const isTaken = !!selection && orders.some((o) => overlaps(o, selection));
 
   return (
     <>
       <div ref={mount} style={{ position: "absolute", inset: 0, touchAction: "none",
         background: "radial-gradient(circle at 50% 55%, #1b2a4a 0%, #0b1020 60%)" }} />
-      <div ref={tip} hidden style={{ position: "fixed", left: 0, top: 0, pointerEvents: "none", padding: "4px 8px",
+      <div ref={tooltip} hidden style={{ position: "fixed", left: 0, top: 0, pointerEvents: "none", padding: "4px 8px",
         borderRadius: 6, background: "#000c", fontSize: 13, whiteSpace: "nowrap" }} />
 
       {paidId && (
@@ -269,7 +326,6 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
         <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", display: "flex",
           gap: 12, alignItems: "center", background: "#151b2e", padding: "12px 16px", borderRadius: 12,
           maxWidth: "calc(100vw - 32px)", boxShadow: "0 10px 30px #0008" }}>
-          <span style={{ width: 22, height: 22, borderRadius: 4, background: owner.color, flex: "none" }} />
           <div style={{ minWidth: 0 }}>
             <b>{owner.name}</b> · {owner.w * owner.h} pixels
             {owner.url && (
@@ -282,45 +338,7 @@ bool inRect(vec2 c, vec4 r) { return r.z > 0.0 && c.x >= r.x && c.x < r.x + r.z 
         </div>
       )}
 
-      <dialog ref={dialog} onClose={() => setSel(null)}>
-        {sel && (
-          <form action={buy}>
-            <h2 style={{ margin: "0 0 2px" }}>Buy {pixels} pixels</h2>
-            <p style={{ margin: 0, opacity: 0.7, fontSize: 13 }}>
-              Near {where!.lat.toFixed(2)}°, {where!.lon.toFixed(2)}° · highlighted in yellow on the globe
-            </p>
-            <input type="hidden" name="x" value={sel.x} />
-            <input type="hidden" name="y" value={sel.y} />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div>
-                <label htmlFor="w">Width (cells)</label>
-                <input id="w" name="w" type="number" min={1} max={W - sel.x} required defaultValue={sel.w} onChange={(e) => resize("w", e.target.value)} />
-              </div>
-              <div>
-                <label htmlFor="h">Height (cells)</label>
-                <input id="h" name="h" type="number" min={1} max={H - sel.y} required defaultValue={sel.h} onChange={(e) => resize("h", e.target.value)} />
-              </div>
-            </div>
-            <label htmlFor="color">Color</label>
-            <input id="color" name="color" type="color" defaultValue="#e63946" />
-            <label htmlFor="name">Your name (shown on hover)</label>
-            <input id="name" name="name" required maxLength={40} autoComplete="nickname" />
-            <label htmlFor="url">Link (optional)</label>
-            <input id="url" name="url" type="url" pattern="https://.*" maxLength={200} placeholder="https://" />
-            {(taken || pixels < MIN_PIXELS || error) && (
-              <p role="alert" style={{ color: "#ff8a80", margin: "10px 0 0" }}>
-                {taken ? "Part of this block is already sold. Try another spot." : pixels < MIN_PIXELS ? `Minimum is ${MIN_PIXELS} pixels.` : error}
-              </p>
-            )}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-              <button type="button" className="ghost" onClick={() => dialog.current!.close()}>Cancel</button>
-              <button disabled={buying || taken || pixels < MIN_PIXELS}>
-                {buying ? "Opening checkout…" : `Pay ${euro(pixels)}`}
-              </button>
-            </div>
-          </form>
-        )}
-      </dialog>
+      <BuyDialog dialog={dialog} selection={selection} setSelection={setSelection} isTaken={isTaken} />
     </>
   );
 }
