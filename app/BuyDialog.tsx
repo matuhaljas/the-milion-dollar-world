@@ -3,6 +3,11 @@ import { useActionState, useEffect, useRef, useState, type RefObject } from "rea
 import { N, PRICE_CENTS, MIN_PIXELS, MAX_SIDE, type Block, cellCenter, vecToLatLon, rgbaToPixels } from "@/lib/grid";
 import { createCheckout } from "./actions";
 
+const fillArt = (ctx: CanvasRenderingContext2D, color: string) => {
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+};
+
 const euro = (pixels: number) => `€${((pixels * PRICE_CENTS) / 100).toLocaleString("en")}`;
 
 type Props = {
@@ -37,8 +42,7 @@ export default function BuyDialog({ dialog, selection, setSelection, isTaken }: 
       next.width = w;
       next.height = h;
       const ctx = next.getContext("2d")!;
-      ctx.fillStyle = brush;
-      ctx.fillRect(0, 0, w, h);
+      fillArt(ctx, brush);
       if (old) ctx.drawImage(old, 0, 0);
       art.current = next;
     }
@@ -58,16 +62,17 @@ export default function BuyDialog({ dialog, selection, setSelection, isTaken }: 
     const steps = Math.max(Math.abs(x - from.x), Math.abs(y - from.y), 1);
     const ctx = artCtx();
     ctx.fillStyle = brush;
-    for (let i = 0; i <= steps; i++)
-      ctx.fillRect(Math.round(from.x + ((x - from.x) * i) / steps), Math.round(from.y + ((y - from.y) * i) / steps), 1, 1);
+    for (let i = 0; i <= steps; i++) {
+      const stepX = Math.round(from.x + ((x - from.x) * i) / steps);
+      const stepY = Math.round(from.y + ((y - from.y) * i) / steps);
+      ctx.fillRect(stepX, stepY, 1, 1);
+    }
     lastCell.current = { x, y };
     redraw();
   };
 
   const fillAll = () => {
-    const ctx = artCtx();
-    ctx.fillStyle = brush;
-    ctx.fillRect(0, 0, art.current!.width, art.current!.height);
+    fillArt(artCtx(), brush);
     redraw();
   };
 
@@ -78,8 +83,7 @@ export default function BuyDialog({ dialog, selection, setSelection, isTaken }: 
     const { width: w, height: h } = art.current!;
     const scale = Math.max(w / img.width, h / img.height);
     const ctx = artCtx();
-    ctx.fillStyle = brush;
-    ctx.fillRect(0, 0, w, h);
+    fillArt(ctx, brush);
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, (w - img.width * scale) / 2, (h - img.height * scale) / 2, img.width * scale, img.height * scale);
     redraw();

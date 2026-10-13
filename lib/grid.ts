@@ -24,7 +24,7 @@ export const FACES: { c: Vec; r: Vec; u: Vec }[] = [
   { c: [0, -1, 0], r: [1, 0, 0], u: [0, 0, 1] }, // south pole
 ];
 
-const Q = Math.PI / 4;
+const QUARTER_PI = Math.PI / 4;
 const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
 // Same tie-breaking as the globe shader.
@@ -38,8 +38,8 @@ export function faceOf([x, y, z]: Vec) {
 // Continuous face coords: cell (x, y) spans [x, x+1) × [y, y+1).
 export function faceToVec(face: number, fx: number, fy: number): Vec {
   const { c, r, u } = FACES[face];
-  const s = Math.tan(((fx / N) * 2 - 1) * Q);
-  const t = Math.tan((1 - (fy / N) * 2) * Q);
+  const s = Math.tan(((fx / N) * 2 - 1) * QUARTER_PI);
+  const t = Math.tan((1 - (fy / N) * 2) * QUARTER_PI);
   const v: Vec = [c[0] + s * r[0] + t * u[0], c[1] + s * r[1] + t * u[1], c[2] + s * r[2] + t * u[2]];
   const len = Math.hypot(...v);
   return [v[0] / len, v[1] / len, v[2] / len];
@@ -49,8 +49,8 @@ export function vecToCell(v: Vec): Cell {
   const face = faceOf(v);
   const { c, r, u } = FACES[face];
   const d = dot(v, c);
-  const a = Math.atan(dot(v, r) / d) / Q; // -1..1, left → right
-  const b = Math.atan(dot(v, u) / d) / Q; // -1..1, bottom → top
+  const a = Math.atan(dot(v, r) / d) / QUARTER_PI; // -1..1, left → right
+  const b = Math.atan(dot(v, u) / d) / QUARTER_PI; // -1..1, bottom → top
   const clamp = (n: number) => Math.min(N - 1, Math.max(0, Math.floor(n)));
   return { face, x: clamp(((a + 1) / 2) * N), y: clamp(((1 - b) / 2) * N) };
 }
@@ -59,10 +59,10 @@ export const cellCenter = (c: Cell) => faceToVec(c.face, c.x + 0.5, c.y + 0.5);
 export const cellIndex = (c: Cell) => (c.face * N + c.y) * N + c.x;
 export const atlasOrigin = (face: number) => [(face % 3) * N, Math.floor(face / 3) * N] as const;
 
-const DEG = 180 / Math.PI;
-export const vecToLatLon = ([x, y, z]: Vec) => ({ lat: Math.asin(y) * DEG, lon: Math.atan2(x, z) * DEG });
+const RAD_TO_DEG = 180 / Math.PI;
+export const vecToLatLon = ([x, y, z]: Vec) => ({ lat: Math.asin(y) * RAD_TO_DEG, lon: Math.atan2(x, z) * RAD_TO_DEG });
 export function latLonToVec(lat: number, lon: number): Vec {
-  const la = lat / DEG, lo = lon / DEG;
+  const la = lat / RAD_TO_DEG, lo = lon / RAD_TO_DEG;
   return [Math.cos(la) * Math.sin(lo), Math.sin(la), Math.cos(la) * Math.cos(lo)];
 }
 

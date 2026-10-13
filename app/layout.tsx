@@ -14,7 +14,8 @@ button, input { font: inherit; }
 button { cursor: pointer; border: 0; border-radius: 8px; padding: 10px 16px; background: #ffd34d; color: #1a1400; font-weight: 600; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.ghost, .ghost-button { background: transparent; color: inherit; border: 1px solid #ffffff33; }
-.ghost-button { display: inline-block; border-radius: 8px; padding: 10px 16px; font-weight: 600; cursor: pointer; opacity: 1; font-size: inherit; }
+.ghost-button { display: inline-block; border-radius: 8px; padding: 10px 16px;
+  font-weight: 600; cursor: pointer; opacity: 1; font-size: inherit; }
 dialog { border: 0; border-radius: 14px; padding: 20px; width: min(380px, calc(100vw - 32px));
   background: #151b2e; color: inherit; box-shadow: 0 20px 60px #0008; }
 dialog:focus-visible { outline: none; }
