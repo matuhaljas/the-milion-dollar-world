@@ -18,7 +18,7 @@ The grid is a cube-sphere: a cube with 408×408 cells per face, inflated into a 
    ```bash
    npm install
    npm run dev
-   stripe listen --forward-to localhost:3000/api/stripe/webhook   # second terminal
+   stripe listen --events checkout.session.completed,checkout.session.expired --forward-to localhost:3000/api/stripe/webhook   # second terminal
    ```
    Buy a block with test card `4242 4242 4242 4242`.
 
